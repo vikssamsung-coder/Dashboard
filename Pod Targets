@@ -1,0 +1,215 @@
+# streamlit_app.py
+# Business Plan (POD-wise) input app -> saves to Excel on your Mac
+# Save path: /Users/viks/Documents/BP Pod planning/pod_business_plans.xlsx
+
+import os
+from datetime import datetime, date
+import pandas as pd
+import streamlit as st
+
+FILE_DIR = "/Users/viks/Documents/BP Pod planning"
+FILE_PATH = os.path.join(FILE_DIR, "pod_business_plans.xlsx")
+
+st.set_page_config(page_title="BP POD Planning", layout="wide")
+st.title("📌 Business Plan Input – POD Planning")
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+
+def safe_sheet_name(name: str) -> str:
+    # Excel sheet name limits: <=31 chars, no : \ / ? * [ ]
+    bad = [":", "\\", "/", "?", "*", "[", "]"]
+    for b in bad:
+        name = name.replace(b, "-")
+    return name[:31].strip() if name.strip() else "Sheet"
+
+def read_existing(file_path: str) -> dict:
+    if not os.path.exists(file_path):
+        return {}
+    try:
+        xls = pd.ExcelFile(file_path)
+        return {sheet: pd.read_excel(file_path, sheet_name=sheet) for sheet in xls.sheet_names}
+    except Exception:
+        return {}
+
+def append_rows(existing: pd.DataFrame, new_rows: pd.DataFrame) -> pd.DataFrame:
+    if existing is None or existing.empty:
+        return new_rows.copy()
+    # Align columns
+    for c in new_rows.columns:
+        if c not in existing.columns:
+            existing[c] = ""
+    for c in existing.columns:
+        if c not in new_rows.columns:
+            new_rows[c] = ""
+    new_rows = new_rows[existing.columns]
+    return pd.concat([existing, new_rows], ignore_index=True)
+
+def save_to_excel(file_path: str, pod: str, kpis_df: pd.DataFrame, acts_df: pd.DataFrame, meta: dict) -> None:
+    ensure_dir(FILE_DIR)
+
+    pod_sheet = safe_sheet_name(pod)
+    kpi_sheet = safe_sheet_name(f"{pod_sheet}_KPI")
+    act_sheet = safe_sheet_name(f"{pod_sheet}_ACT")
+
+    existing = read_existing(file_path)
+
+    # Add metadata columns
+    kpis_df = kpis_df.copy()
+    acts_df = acts_df.copy()
+
+    for df in (kpis_df, acts_df):
+        df["submitted_at"] = meta["submitted_at"]
+        df["submitted_by"] = meta["submitted_by"]
+        df["pod"] = pod
+        df["month"] = meta["month"]
+
+    # Append into existing sheets
+    kpi_existing = existing.get(kpi_sheet, pd.DataFrame())
+    act_existing = existing.get(act_sheet, pd.DataFrame())
+
+    kpi_final = append_rows(kpi_existing, kpis_df)
+    act_final = append_rows(act_existing, acts_df)
+
+    # Write back: keep other sheets too
+    with pd.ExcelWriter(file_path, engine="openpyxl", mode="w") as writer:
+        # write untouched sheets first
+        for sheet, df in existing.items():
+            if sheet in (kpi_sheet, act_sheet):
+                continue
+            df.to_excel(writer, sheet_name=sheet, index=False)
+
+        kpi_final.to_excel(writer, sheet_name=kpi_sheet, index=False)
+        act_final.to_excel(writer, sheet_name=act_sheet, index=False)
+
+# -----------------------------
+# UI Inputs
+# -----------------------------
+pods = [
+    "Online POD",
+    "SY POD",
+    "Reactivation POD",
+    "B2B Client Leads",
+    "B2B Partner Registration",
+    "B2B Partner Activation",
+    "Mutual Fund",
+    "Quant Algo",
+]
+
+col1, col2, col3 = st.columns([1.2, 1, 1])
+with col1:
+    pod = st.selectbox("Select POD", pods)
+with col2:
+    month = st.selectbox("Month", ["March", "April", "May", "June"], index=0)
+with col3:
+    submitted_by = st.text_input("Your Name (POD Lead)", placeholder="Start writing...")
+
+st.divider()
+
+st.subheader("1) Business Header (KPIs)")
+st.caption("Add only the KPIs relevant to your POD. Keep Target blank if not known yet.")
+
+default_kpis = pd.DataFrame(
+    [
+        {"kpi": "New Accounts", "target": "", "notes": ""},
+        {"kpi": "Accounts with Margin", "target": "", "notes": ""},
+        {"kpi": "Accounts with Subscription", "target": "", "notes": ""},
+    ]
+)
+
+kpis_df = st.data_editor(
+    default_kpis,
+    num_rows="dynamic",
+    use_container_width=True,
+    column_config={
+        "kpi": st.column_config.TextColumn("Business Header (KPI)", required=True),
+        "target": st.column_config.TextColumn("Target", required=False),
+        "notes": st.column_config.TextColumn("Notes (optional)", required=False),
+    },
+)
+
+st.divider()
+
+st.subheader("2) Plan to Achieve Above Target – Activity Planning")
+st.caption("Add activities with Direct/Indirect impact, expected outcome, and dates.")
+
+default_acts = pd.DataFrame(
+    [
+        {
+            "sr_no": 1,
+            "activity": "",
+            "impact_category": "Direct",
+            "expected_outcome": "",
+            "start_date": date.today(),
+            "end_date": date.today(),
+            "owner": "",
+        }
+    ]
+)
+
+acts_df = st.data_editor(
+    default_acts,
+    num_rows="dynamic",
+    use_container_width=True,
+    column_config={
+        "sr_no": st.column_config.NumberColumn("Sr. No", min_value=1, step=1),
+        "activity": st.column_config.TextColumn("Activity", required=True),
+        "impact_category": st.column_config.SelectboxColumn(
+            "Impact Category", options=["Direct", "Indirect"], required=True
+        ),
+        "expected_outcome": st.column_config.TextColumn("Expected Outcome", required=False),
+        "start_date": st.column_config.DateColumn("Start Date", required=True),
+        "end_date": st.column_config.DateColumn("End Date", required=True),
+        "owner": st.column_config.TextColumn("Owner (optional)", required=False),
+    },
+)
+
+st.divider()
+
+st.subheader("Submit")
+st.write(f"📁 Save location: `{FILE_PATH}`")
+
+left, right = st.columns([1, 1])
+with left:
+    do_preview = st.checkbox("Preview data before submit", value=True)
+
+if do_preview:
+    st.markdown("**Preview – KPIs**")
+    st.dataframe(kpis_df, use_container_width=True)
+    st.markdown("**Preview – Activities**")
+    st.dataframe(acts_df, use_container_width=True)
+
+submit = st.button("✅ Submit & Save to Excel", type="primary")
+
+if submit:
+    # Basic validations (minimal; don't block if user wants blanks)
+    if not submitted_by.strip():
+        st.error("Please enter your name in 'Your Name (POD Lead)'.")
+        st.stop()
+
+    # Clean rows: keep rows where KPI is provided; activities where activity is provided
+    kpis_clean = kpis_df.copy()
+    kpis_clean["kpi"] = kpis_clean["kpi"].astype(str).str.strip()
+    kpis_clean = kpis_clean[kpis_clean["kpi"] != ""]
+
+    acts_clean = acts_df.copy()
+    acts_clean["activity"] = acts_clean["activity"].astype(str).str.strip()
+    acts_clean = acts_clean[acts_clean["activity"] != ""]
+
+    meta = {
+        "submitted_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "submitted_by": submitted_by.strip(),
+        "month": month,
+    }
+
+    try:
+        save_to_excel(FILE_PATH, pod, kpis_clean, acts_clean, meta)
+        st.success("Saved successfully ✅")
+        st.info("Next submit will append rows to the same POD sheets (KPI and Activity).")
+    except PermissionError:
+        st.error("Permission error: Close the Excel file if it is open, then try again.")
+    except Exception as e:
+        st.error(f"Failed to save: {e}")
